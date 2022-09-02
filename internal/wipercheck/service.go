@@ -2,9 +2,13 @@ package wipercheck
 
 import (
 	"encoding/json"
+	"fmt"
+	ps "github.com/evanhutnik/wipercheck-service/internal/positionstack"
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 	"io"
 	"net/http"
+	"os"
 )
 
 type JourneyRequest struct {
@@ -18,6 +22,7 @@ type JourneyResponse struct {
 }
 
 type Service struct {
+	psc    *ps.Client
 	Logger *zap.SugaredLogger
 }
 
@@ -27,6 +32,11 @@ func New() *Service {
 	baseLogger, _ := zap.NewProduction()
 	defer baseLogger.Sync()
 	s.Logger = baseLogger.Sugar()
+
+	s.psc = ps.New(
+		ps.ApiKeyOption(os.Getenv("positionstack_apikey")),
+		ps.BaseUrlOption(os.Getenv("positionstack_baseurl")),
+	)
 
 	return s
 }
@@ -51,6 +61,31 @@ func (s *Service) Journey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	g := new(errgroup.Group)
+
+	g.Go(func() error {
+		return s.geoCode(w, req.from)
+	})
+	g.Go(func() error {
+		return s.geoCode(w, req.to)
+	})
+
+	if err := g.Wait(); err != nil {
+		return
+	}
+
+}
+
+func (s *Service) geoCode(w http.ResponseWriter, address string) error {
+	toGeo, err := s.psc.GeoCode(address)
+	if err != nil {
+		s.Logger.Errorw(err.Error(),
+			"address", address)
+		s.WriteError(w, 500, fmt.Sprintf("Internal error geocoding address '%v'.", address))
+	} else if len(toGeo.Data) == 0 {
+		s.WriteError(w, 400, fmt.Sprintf("Unrecognized address '%v'. Check spelling or be more specific.", address))
+	}
+	return err
 }
 
 func (s *Service) WriteError(w http.ResponseWriter, statusCode int, errorMsg string) {
