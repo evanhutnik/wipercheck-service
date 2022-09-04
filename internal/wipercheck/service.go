@@ -21,6 +21,15 @@ type JourneyResponse struct {
 	Error string `json:"error"`
 }
 
+type CodeError struct {
+	code int
+	msg  string
+}
+
+func (c CodeError) Error() string {
+	return c.msg
+}
+
 type Service struct {
 	psc    *ps.Client
 	Logger *zap.SugaredLogger
@@ -43,53 +52,70 @@ func New() *Service {
 
 func (s *Service) Start() {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/journey", s.Journey)
+	mux.HandleFunc("/journey", s.JourneyHandler)
 
 	_ = http.ListenAndServe(":80", mux)
 }
 
-func (s *Service) Journey(w http.ResponseWriter, r *http.Request) {
+func (s *Service) JourneyHandler(w http.ResponseWriter, r *http.Request) {
+	err := s.Journey(r)
+	if err != nil {
+		s.writeError(w, err)
+	}
+}
+
+func (s *Service) Journey(r *http.Request) error {
 	req := JourneyRequest{
 		from: r.URL.Query().Get("from"),
 		to:   r.URL.Query().Get("to"),
 	}
 	if req.from == "" {
-		s.WriteError(w, 400, "Missing 'from' query parameter in request")
-		return
+		return CodeError{code: 400, msg: "Missing 'from' query parameter in request"}
 	} else if req.to == "" {
-		s.WriteError(w, 400, "Missing 'to' query parameter in request.")
-		return
+		return CodeError{code: 400, msg: "Missing 'to' query parameter in request"}
 	}
 
+	var fromCoord, toCoord *ps.Coordinate
 	g := new(errgroup.Group)
 
 	g.Go(func() error {
-		return s.geoCode(w, req.from)
+		var err error
+		fromCoord, err = s.geoCode(req.from)
+		return err
 	})
 	g.Go(func() error {
-		return s.geoCode(w, req.to)
+		var err error
+		toCoord, err = s.geoCode(req.to)
+		return err
 	})
 
 	if err := g.Wait(); err != nil {
-		return
+		return err
 	}
 
+	return nil
 }
 
-func (s *Service) geoCode(w http.ResponseWriter, address string) error {
+func (s *Service) geoCode(address string) (*ps.Coordinate, error) {
 	toGeo, err := s.psc.GeoCode(address)
 	if err != nil {
 		s.Logger.Errorw(err.Error(),
-			"address", address)
-		s.WriteError(w, 500, fmt.Sprintf("Internal error geocoding address '%v'.", address))
+			"address", address, "action", "GeoCode")
+		return nil, CodeError{code: 500, msg: fmt.Sprintf("Internal error geocoding address '%v'.", address)}
 	} else if len(toGeo.Data) == 0 {
-		s.WriteError(w, 400, fmt.Sprintf("Unrecognized address '%v'. Check spelling or be more specific.", address))
+		return nil, CodeError{code: 400, msg: fmt.Sprintf("Unrecognized address '%v'. Check spelling or be more specific.", address)}
 	}
-	return err
+	return toGeo.Data[0], err
 }
 
-func (s *Service) WriteError(w http.ResponseWriter, statusCode int, errorMsg string) {
-	bodyBytes, _ := json.Marshal(JourneyResponse{Error: errorMsg})
-	w.WriteHeader(statusCode)
-	io.WriteString(w, string(bodyBytes[:]))
+func (s *Service) writeError(w http.ResponseWriter, err error) {
+	codeErr, ok := err.(CodeError)
+	if ok {
+		bodyBytes, _ := json.Marshal(JourneyResponse{Error: codeErr.Error()})
+		w.WriteHeader(codeErr.code)
+		io.WriteString(w, string(bodyBytes[:]))
+	} else {
+		w.WriteHeader(500)
+		io.WriteString(w, "Internal server error")
+	}
 }

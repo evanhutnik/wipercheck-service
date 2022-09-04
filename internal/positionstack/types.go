@@ -1,7 +1,7 @@
 package positionstack
 
 type GeoCodeResponse struct {
-	Data []Coordinate
+	Data []*Coordinate
 }
 
 type Coordinate struct {
