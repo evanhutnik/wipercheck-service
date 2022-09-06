@@ -3,7 +3,9 @@ package wipercheck
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/evanhutnik/wipercheck-service/internal/osrm"
 	ps "github.com/evanhutnik/wipercheck-service/internal/positionstack"
+	t "github.com/evanhutnik/wipercheck-service/internal/types"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 	"io"
@@ -31,7 +33,9 @@ func (c CodeError) Error() string {
 }
 
 type Service struct {
-	psc    *ps.Client
+	osrm *osrm.Client
+	psc  *ps.Client
+
 	Logger *zap.SugaredLogger
 }
 
@@ -45,6 +49,10 @@ func New() *Service {
 	s.psc = ps.New(
 		ps.ApiKeyOption(os.Getenv("positionstack_apikey")),
 		ps.BaseUrlOption(os.Getenv("positionstack_baseurl")),
+	)
+
+	s.osrm = osrm.New(
+		osrm.BaseUrlOption(os.Getenv("osrm_baseurl")),
 	)
 
 	return s
@@ -75,7 +83,22 @@ func (s *Service) Journey(r *http.Request) error {
 		return CodeError{code: 400, msg: "Missing 'to' query parameter in request"}
 	}
 
-	var fromCoord, toCoord *ps.Coordinate
+	trip, err := s.getTripCoordinates(req)
+	if err != nil {
+		return err
+	}
+
+	route, err := s.getTripRoute(trip)
+	if err != nil {
+		return err
+	}
+	s.getWeatherSteps(route)
+
+	return nil
+}
+
+func (s *Service) getTripCoordinates(req JourneyRequest) (*t.Trip, error) {
+	var fromCoord, toCoord *t.Coordinate
 	g := new(errgroup.Group)
 
 	g.Go(func() error {
@@ -90,13 +113,15 @@ func (s *Service) Journey(r *http.Request) error {
 	})
 
 	if err := g.Wait(); err != nil {
-		return err
+		return nil, err
 	}
-
-	return nil
+	return &t.Trip{
+		From: fromCoord,
+		To:   toCoord,
+	}, nil
 }
 
-func (s *Service) geoCode(address string) (*ps.Coordinate, error) {
+func (s *Service) geoCode(address string) (*t.Coordinate, error) {
 	toGeo, err := s.psc.GeoCode(address)
 	if err != nil {
 		s.Logger.Errorw(err.Error(),
@@ -106,6 +131,46 @@ func (s *Service) geoCode(address string) (*ps.Coordinate, error) {
 		return nil, CodeError{code: 400, msg: fmt.Sprintf("Unrecognized address '%v'. Check spelling or be more specific.", address)}
 	}
 	return toGeo.Data[0], err
+}
+
+func (s *Service) getTripRoute(trip *t.Trip) (*t.RouteResponse, error) {
+	route, err := s.osrm.Route(trip)
+	if err != nil {
+		s.Logger.Errorw(err.Error(),
+			"from", trip.From.Label, "to", trip.To.Label)
+		return nil, CodeError{code: 500, msg: "Internal error retrieving trip route."}
+	}
+	return route, nil
+}
+
+func (s *Service) getWeatherSteps(route *t.RouteResponse) {
+	var tripDuration, durationStep float64
+	tripDuration = route.Routes[0].Duration
+	switch {
+	case tripDuration > 18000:
+		durationStep = tripDuration / 20
+	case tripDuration > 7200:
+		durationStep = 15 * 60
+	case tripDuration > 3600:
+		durationStep = 10 * 60
+	case tripDuration > 300:
+		durationStep = 5 * 60
+	default:
+		durationStep = tripDuration / 3
+	}
+
+	routeSteps := route.Routes[0].Legs[0].Steps
+	var weatherSteps []t.Step
+	var currentDuration, goalDuration float64
+	goalDuration = durationStep
+	for i, step := range routeSteps {
+		currentDuration += step.Duration
+		if currentDuration >= goalDuration {
+			weatherSteps = append(weatherSteps, routeSteps[i])
+			goalDuration = currentDuration + durationStep
+		}
+	}
+
 }
 
 func (s *Service) writeError(w http.ResponseWriter, err error) {

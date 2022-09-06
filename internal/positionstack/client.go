@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	wc "github.com/evanhutnik/wipercheck-service/internal/types"
 	"io"
 	"net/http"
 	"net/url"
@@ -43,10 +44,10 @@ func New(opts ...ClientOption) *Client {
 	return c
 }
 
-func (c *Client) GeoCode(location string) (*GeoCodeResponse, error) {
+func (c *Client) GeoCode(location string) (*wc.GeoCodeResponse, error) {
 	req, err := url.Parse(c.baseUrl)
 	if err != nil {
-		err = errors.New(fmt.Sprintf("failed to parse baseUrl %s: %s", c.baseUrl, err.Error()))
+		err = errors.New(fmt.Sprintf("failed to parse positionstack baseUrl %s: %s", c.baseUrl, err.Error()))
 		return nil, err
 	}
 
@@ -72,7 +73,7 @@ func (c *Client) GeoCode(location string) (*GeoCodeResponse, error) {
 		return nil, err
 	}
 	//unmarshal into object
-	var respObj GeoCodeResponse
+	var respObj wc.GeoCodeResponse
 	err = json.Unmarshal(body, &respObj)
 	if err != nil {
 		err = errors.New(fmt.Sprintf("error unmarshalling response from positionstack: %s", err.Error()))
