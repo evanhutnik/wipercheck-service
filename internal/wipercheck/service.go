@@ -1,11 +1,13 @@
 package wipercheck
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/evanhutnik/wipercheck-service/internal/osrm"
 	ps "github.com/evanhutnik/wipercheck-service/internal/positionstack"
 	t "github.com/evanhutnik/wipercheck-service/internal/types"
+	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 	"io"
@@ -35,6 +37,7 @@ func (c CodeError) Error() string {
 type Service struct {
 	osrm *osrm.Client
 	psc  *ps.Client
+	rc   *redis.Client
 
 	Logger *zap.SugaredLogger
 }
@@ -55,6 +58,10 @@ func New() *Service {
 		osrm.BaseUrlOption(os.Getenv("osrm_baseurl")),
 	)
 
+	s.rc = redis.NewClient(&redis.Options{
+		Addr: os.Getenv("redis_address"),
+	})
+
 	return s
 }
 
@@ -66,13 +73,13 @@ func (s *Service) Start() {
 }
 
 func (s *Service) JourneyHandler(w http.ResponseWriter, r *http.Request) {
-	err := s.Journey(r)
+	err := s.Journey(r.Context(), r)
 	if err != nil {
 		s.writeError(w, err)
 	}
 }
 
-func (s *Service) Journey(r *http.Request) error {
+func (s *Service) Journey(ctx context.Context, r *http.Request) error {
 	req := JourneyRequest{
 		from: r.URL.Query().Get("from"),
 		to:   r.URL.Query().Get("to"),
@@ -83,12 +90,12 @@ func (s *Service) Journey(r *http.Request) error {
 		return CodeError{code: 400, msg: "Missing 'to' query parameter in request"}
 	}
 
-	trip, err := s.getTripCoordinates(req)
+	trip, err := s.getTripCoordinates(ctx, req)
 	if err != nil {
 		return err
 	}
 
-	route, err := s.getTripRoute(trip)
+	route, err := s.getTripRoute(ctx, trip)
 	if err != nil {
 		return err
 	}
@@ -97,18 +104,18 @@ func (s *Service) Journey(r *http.Request) error {
 	return nil
 }
 
-func (s *Service) getTripCoordinates(req JourneyRequest) (*t.Trip, error) {
+func (s *Service) getTripCoordinates(ctx context.Context, req JourneyRequest) (*t.Trip, error) {
 	var fromCoord, toCoord *t.Coordinate
 	g := new(errgroup.Group)
 
 	g.Go(func() error {
 		var err error
-		fromCoord, err = s.geoCode(req.from)
+		fromCoord, err = s.geoCode(ctx, req.from)
 		return err
 	})
 	g.Go(func() error {
 		var err error
-		toCoord, err = s.geoCode(req.to)
+		toCoord, err = s.geoCode(ctx, req.to)
 		return err
 	})
 
@@ -121,8 +128,8 @@ func (s *Service) getTripCoordinates(req JourneyRequest) (*t.Trip, error) {
 	}, nil
 }
 
-func (s *Service) geoCode(address string) (*t.Coordinate, error) {
-	toGeo, err := s.psc.GeoCode(address)
+func (s *Service) geoCode(ctx context.Context, address string) (*t.Coordinate, error) {
+	toGeo, err := s.psc.GeoCode(ctx, address)
 	if err != nil {
 		s.Logger.Errorw(err.Error(),
 			"address", address, "action", "GeoCode")
@@ -133,8 +140,8 @@ func (s *Service) geoCode(address string) (*t.Coordinate, error) {
 	return toGeo.Data[0], err
 }
 
-func (s *Service) getTripRoute(trip *t.Trip) (*t.RouteResponse, error) {
-	route, err := s.osrm.Route(trip)
+func (s *Service) getTripRoute(ctx context.Context, trip *t.Trip) (*t.Route, error) {
+	route, err := s.osrm.Route(ctx, trip)
 	if err != nil {
 		s.Logger.Errorw(err.Error(),
 			"from", trip.From.Label, "to", trip.To.Label)
@@ -143,9 +150,9 @@ func (s *Service) getTripRoute(trip *t.Trip) (*t.RouteResponse, error) {
 	return route, nil
 }
 
-func (s *Service) getWeatherSteps(route *t.RouteResponse) {
+func (s *Service) getWeatherSteps(route *t.Route) []t.Step {
 	var tripDuration, durationStep float64
-	tripDuration = route.Routes[0].Duration
+	tripDuration = route.Duration
 	switch {
 	case tripDuration > 18000:
 		durationStep = tripDuration / 20
@@ -159,18 +166,20 @@ func (s *Service) getWeatherSteps(route *t.RouteResponse) {
 		durationStep = tripDuration / 3
 	}
 
-	routeSteps := route.Routes[0].Legs[0].Steps
+	routeSteps := route.Steps
 	var weatherSteps []t.Step
 	var currentDuration, goalDuration float64
 	goalDuration = durationStep
 	for i, step := range routeSteps {
-		currentDuration += step.Duration
+		currentDuration += step.StepDuration
 		if currentDuration >= goalDuration {
-			weatherSteps = append(weatherSteps, routeSteps[i])
+			weatherStep := routeSteps[i]
+			weatherStep.TotalDuration = currentDuration
+			weatherSteps = append(weatherSteps, weatherStep)
 			goalDuration = currentDuration + durationStep
 		}
 	}
-
+	return weatherSteps
 }
 
 func (s *Service) writeError(w http.ResponseWriter, err error) {

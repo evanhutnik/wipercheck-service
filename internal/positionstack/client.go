@@ -1,6 +1,7 @@
 package positionstack
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,7 +45,7 @@ func New(opts ...ClientOption) *Client {
 	return c
 }
 
-func (c *Client) GeoCode(location string) (*wc.GeoCodeResponse, error) {
+func (c *Client) GeoCode(ctx context.Context, location string) (*wc.GeoCodeResponse, error) {
 	req, err := url.Parse(c.baseUrl)
 	if err != nil {
 		err = errors.New(fmt.Sprintf("failed to parse positionstack baseUrl %s: %s", c.baseUrl, err.Error()))
@@ -57,7 +58,8 @@ func (c *Client) GeoCode(location string) (*wc.GeoCodeResponse, error) {
 	q.Add("limit", "1")
 	req.RawQuery = q.Encode()
 
-	resp, err := http.Get(req.String())
+	ctxReq, _ := http.NewRequestWithContext(ctx, "GET", req.String(), nil)
+	resp, err := http.DefaultClient.Do(ctxReq)
 	if err != nil {
 		err = errors.New(fmt.Sprintf("error on positionstack api request: %s", err.Error()))
 		return nil, err
@@ -72,7 +74,7 @@ func (c *Client) GeoCode(location string) (*wc.GeoCodeResponse, error) {
 		err = errors.New(fmt.Sprintf("error reading positionstack response body: %s", err.Error()))
 		return nil, err
 	}
-	//unmarshal into object
+
 	var respObj wc.GeoCodeResponse
 	err = json.Unmarshal(body, &respObj)
 	if err != nil {

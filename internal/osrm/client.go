@@ -1,6 +1,7 @@
 package osrm
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,7 +35,7 @@ func New(opts ...ClientOption) *Client {
 	return c
 }
 
-func (c *Client) Route(trip *t.Trip) (*t.RouteResponse, error) {
+func (c *Client) Route(ctx context.Context, trip *t.Trip) (*t.Route, error) {
 	reqUrl := fmt.Sprintf("%v/%f,%f;%f,%f", c.baseUrl, trip.From.Longitude, trip.From.Latitude, trip.To.Longitude, trip.To.Latitude)
 	req, err := url.Parse(reqUrl)
 	if err != nil {
@@ -47,7 +48,8 @@ func (c *Client) Route(trip *t.Trip) (*t.RouteResponse, error) {
 	q.Add("overview", "false")
 	req.RawQuery = q.Encode()
 
-	resp, err := http.Get(req.String())
+	ctxReq, _ := http.NewRequestWithContext(ctx, "GET", req.String(), nil)
+	resp, err := http.DefaultClient.Do(ctxReq)
 	if err != nil {
 		err = errors.New(fmt.Sprintf("error on osrm api request: %s", err.Error()))
 		return nil, err
@@ -62,12 +64,29 @@ func (c *Client) Route(trip *t.Trip) (*t.RouteResponse, error) {
 		err = errors.New(fmt.Sprintf("error reading osrm response body: %s", err.Error()))
 		return nil, err
 	}
-	//unmarshal into object
-	var respObj t.RouteResponse
+
+	var respObj t.OSRMResponse
 	err = json.Unmarshal(body, &respObj)
 	if err != nil {
 		err = errors.New(fmt.Sprintf("error unmarshalling response from osrm: %s", err.Error()))
 		return nil, err
 	}
-	return &respObj, nil
+
+	route := &t.Route{
+		Steps:    c.routeStepsFromOSRM(respObj.Routes[0].Legs[0].Steps),
+		Duration: respObj.Routes[0].Duration,
+	}
+	return route, nil
+}
+
+func (c Client) routeStepsFromOSRM(osrm []t.OSRMStep) []t.Step {
+	var routeSteps []t.Step
+	for _, step := range osrm {
+		routeSteps = append(routeSteps, t.Step{
+			Name:         step.Name,
+			StepDuration: step.Duration,
+			Coordinates:  step.Maneuver.Location,
+		})
+	}
+	return routeSteps
 }
