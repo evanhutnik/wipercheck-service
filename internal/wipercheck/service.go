@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	ow "github.com/evanhutnik/wipercheck-service/internal/openweather"
 	"github.com/evanhutnik/wipercheck-service/internal/osrm"
 	ps "github.com/evanhutnik/wipercheck-service/internal/positionstack"
 	t "github.com/evanhutnik/wipercheck-service/internal/types"
@@ -13,6 +14,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
+	"sync"
+	"time"
 )
 
 type JourneyRequest struct {
@@ -36,6 +40,7 @@ func (c CodeError) Error() string {
 
 type Service struct {
 	osrm *osrm.Client
+	ow   *ow.Client
 	psc  *ps.Client
 	rc   *redis.Client
 
@@ -56,6 +61,11 @@ func New() *Service {
 
 	s.osrm = osrm.New(
 		osrm.BaseUrlOption(os.Getenv("osrm_baseurl")),
+	)
+
+	s.ow = ow.New(
+		ow.ApiKeyOption(os.Getenv("openweather_apikey")),
+		ow.BaseUrlOption(os.Getenv("openweather_baseurl")),
 	)
 
 	s.rc = redis.NewClient(&redis.Options{
@@ -99,7 +109,7 @@ func (s *Service) Journey(ctx context.Context, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	s.getWeatherSteps(route)
+	s.hourlyWeather(ctx, s.steps(route))
 
 	return nil
 }
@@ -150,7 +160,7 @@ func (s *Service) getTripRoute(ctx context.Context, trip *t.Trip) (*t.Route, err
 	return route, nil
 }
 
-func (s *Service) getWeatherSteps(route *t.Route) []t.Step {
+func (s *Service) steps(route *t.Route) []t.Step {
 	var tripDuration, durationStep float64
 	tripDuration = route.Duration
 	switch {
@@ -180,6 +190,54 @@ func (s *Service) getWeatherSteps(route *t.Route) []t.Step {
 		}
 	}
 	return weatherSteps
+}
+
+func (s *Service) hourlyWeather(ctx context.Context, steps []t.Step) {
+	wg := new(sync.WaitGroup)
+	wg.Add(len(steps))
+
+	for i, step := range steps {
+		i, step := i, step
+		go func() {
+			defer wg.Done()
+			unixTime := time.Now().Unix() + int64(step.TotalDuration)
+			stepHour := time.Unix(unixTime, 0).UTC().Truncate(time.Hour).UTC().Unix()
+			geoResponse := s.rc.GeoRadius(ctx, strconv.FormatInt(stepHour, 10), step.Longitude, step.Latitude,
+				&redis.GeoRadiusQuery{
+					Radius:    10,
+					Unit:      "km",
+					WithCoord: true,
+					WithDist:  true,
+					Count:     1,
+					Sort:      "ASC",
+				})
+			locations, err := geoResponse.Result()
+			if err != nil {
+				s.Logger.Errorf("Redis error when fetching GeoRadius for (%v, %v): %v",
+					step.Latitude, step.Longitude, err.Error())
+			}
+			if len(locations) > 0 {
+				var redisWeather t.RedisHourlyWeather
+				err := json.Unmarshal([]byte(locations[0].Name), &redisWeather)
+				if err != nil {
+					s.Logger.Errorf("Error unmarshalling redis weather for (%v, %v): %v",
+						step.Latitude, step.Longitude, err.Error())
+				} else {
+					step.HourlyWeather = redisWeather.Hourly
+					steps[i] = step
+					return
+				}
+			}
+			hourly, err := s.ow.GetHourlyWeather(ctx, step.Latitude, step.Longitude, stepHour)
+			if err != nil {
+				s.Logger.Warnf("Error getting hourly weather data: %v", err.Error())
+				return
+			}
+			step.HourlyWeather = *hourly
+			steps[i] = step
+		}()
+	}
+	wg.Wait()
 }
 
 func (s *Service) writeError(w http.ResponseWriter, err error) {

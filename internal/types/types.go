@@ -24,14 +24,21 @@ type Step struct {
 	Name          string
 	StepDuration  float64
 	TotalDuration float64
-	Coordinates   []float64
+	Latitude      float64
+	Longitude     float64
 	HourlyWeather HourlyWeather
 }
 
+type WeatherData struct {
+	Lat    float64
+	Lon    float64
+	Hourly []HourlyWeather
+}
+
 type HourlyWeather struct {
-	Time    int64 `json:"dt"`
-	Weather []Conditions
-	Pop     float64
+	Time       int64 `json:"dt"`
+	Conditions Conditions
+	Pop        float64
 }
 
 type Conditions struct {
@@ -39,6 +46,11 @@ type Conditions struct {
 	Main        string
 	Description string
 	Icon        string
+}
+
+type RedisHourlyWeather struct {
+	Rand   float64
+	Hourly HourlyWeather
 }
 
 // External Objects
@@ -84,4 +96,23 @@ type OSRMManeuver struct {
 	Type          string    `json:"type"`
 	Modifier      string    `json:"modifier,omitempty"`
 	Exit          int       `json:"exit,omitempty"`
+}
+
+type OWConditions struct {
+	Id          int
+	Main        string
+	Description string
+	Icon        string
+}
+
+type OWHourlyWeather struct {
+	Time       int64          `json:"dt"`
+	Conditions []OWConditions `json:"weather"`
+	Pop        float64
+}
+
+type OWResponse struct {
+	Lat    float64
+	Lon    float64
+	Hourly []OWHourlyWeather
 }
