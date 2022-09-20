@@ -95,8 +95,8 @@ func (c Client) GetWeather(ctx context.Context, lat float64, long float64) (*typ
 	return wr, nil
 }
 
-func (c Client) GetHourlyWeather(ctx context.Context, lat float64, long float64, time int64) (*types.HourlyWeather, error) {
-	weatherData, err := c.GetWeather(ctx, lat, long)
+func (c Client) GetHourlyWeather(ctx context.Context, coords types.Coordinates, time int64) (*types.HourlyWeather, error) {
+	weatherData, err := c.GetWeather(ctx, coords.Latitude, coords.Longitude)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +117,6 @@ func (c Client) hourlyWeatherFromOW(owHourly []types.OWHourlyWeather) []types.Ho
 				Id:          owHour.Conditions[0].Id,
 				Main:        owHour.Conditions[0].Main,
 				Description: owHour.Conditions[0].Description,
-				Icon:        owHour.Conditions[0].Icon,
 			}
 		}
 		hourly = append(hourly, types.HourlyWeather{

@@ -20,13 +20,16 @@ import (
 )
 
 type JourneyRequest struct {
-	from string
-	to   string
-	//TODO: when field
+	from       string
+	to         string
+	reverseGeo bool
+	minPop     float64
+	delay      int64
 }
 
 type JourneyResponse struct {
-	Error string `json:"error"`
+	Error string   `json:"error,omitempty"`
+	Steps []t.Step `json:"steps,omitempty"`
 }
 
 type CodeError struct {
@@ -39,10 +42,11 @@ func (c CodeError) Error() string {
 }
 
 type Service struct {
-	osrm *osrm.Client
-	ow   *ow.Client
-	psc  *ps.Client
-	rc   *redis.Client
+	osrm         *osrm.Client
+	ow           *ow.Client
+	psc          *ps.Client
+	rc           *redis.Client
+	disableRedis bool
 
 	Logger *zap.SugaredLogger
 }
@@ -72,6 +76,11 @@ func New() *Service {
 		Addr: os.Getenv("redis_address"),
 	})
 
+	disableRedis, err := strconv.ParseBool(os.Getenv("disable_redis"))
+	if err == nil {
+		s.disableRedis = disableRedis
+	}
+
 	return s
 }
 
@@ -83,39 +92,73 @@ func (s *Service) Start() {
 }
 
 func (s *Service) JourneyHandler(w http.ResponseWriter, r *http.Request) {
-	err := s.Journey(r.Context(), r)
+	resp, err := s.Journey(r.Context(), r)
 	if err != nil {
 		s.writeError(w, err)
+		return
 	}
+	s.writeResponse(w, resp)
 }
 
-func (s *Service) Journey(ctx context.Context, r *http.Request) error {
-	req := JourneyRequest{
-		from: r.URL.Query().Get("from"),
-		to:   r.URL.Query().Get("to"),
-	}
-	if req.from == "" {
-		return CodeError{code: 400, msg: "Missing 'from' query parameter in request"}
-	} else if req.to == "" {
-		return CodeError{code: 400, msg: "Missing 'to' query parameter in request"}
-	}
-
-	trip, err := s.getTripCoordinates(ctx, req)
+func (s *Service) Journey(ctx context.Context, r *http.Request) (*JourneyResponse, error) {
+	req, err := s.parseRequest(r)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	route, err := s.getTripRoute(ctx, trip)
+	trip, err := s.tripCoordinates(ctx, req)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	s.hourlyWeather(ctx, s.steps(route))
 
-	return nil
+	route, err := s.tripRoute(ctx, trip)
+	if err != nil {
+		return nil, err
+	}
+
+	steps := s.steps(route)
+
+	s.weather(ctx, steps, req.delay)
+
+	resp, err := s.response(ctx, steps, req)
+
+	return resp, nil
 }
 
-func (s *Service) getTripCoordinates(ctx context.Context, req JourneyRequest) (*t.Trip, error) {
-	var fromCoord, toCoord *t.Coordinate
+func (s *Service) parseRequest(r *http.Request) (*JourneyRequest, error) {
+	from := r.URL.Query().Get("from")
+	to := r.URL.Query().Get("to")
+	if from == "" {
+		return nil, CodeError{code: 400, msg: "Missing 'from' query parameter in request"}
+	} else if to == "" {
+		return nil, CodeError{code: 400, msg: "Missing 'to' query parameter in request"}
+	}
+	req := &JourneyRequest{
+		from: from,
+		to:   to,
+	}
+	reverseGeo, err := strconv.ParseBool(r.URL.Query().Get("reverseGeo"))
+	if err == nil {
+		req.reverseGeo = reverseGeo
+	}
+	minPop, err := strconv.ParseFloat(r.URL.Query().Get("minPop"), 64)
+	if err == nil {
+		req.minPop = minPop
+	}
+
+	if r.URL.Query().Get("delay") != "" {
+		delay, err := strconv.ParseInt(r.URL.Query().Get("delay"), 10, 64)
+		if err != nil || delay > 43200 {
+			return nil, CodeError{code: 400, msg: "'delay' parameter must be an integer less than 43200 (12 hours)"}
+		}
+		req.delay = delay
+	}
+
+	return req, nil
+}
+
+func (s *Service) tripCoordinates(ctx context.Context, req *JourneyRequest) (*t.Trip, error) {
+	var fromCoord, toCoord *t.Coordinates
 	g := new(errgroup.Group)
 
 	g.Go(func() error {
@@ -138,23 +181,23 @@ func (s *Service) getTripCoordinates(ctx context.Context, req JourneyRequest) (*
 	}, nil
 }
 
-func (s *Service) geoCode(ctx context.Context, address string) (*t.Coordinate, error) {
+func (s *Service) geoCode(ctx context.Context, address string) (*t.Coordinates, error) {
 	toGeo, err := s.psc.GeoCode(ctx, address)
 	if err != nil {
 		s.Logger.Errorw(err.Error(),
 			"address", address, "action", "GeoCode")
 		return nil, CodeError{code: 500, msg: fmt.Sprintf("Internal error geocoding address '%v'.", address)}
-	} else if len(toGeo.Data) == 0 {
+	} else if toGeo == nil {
 		return nil, CodeError{code: 400, msg: fmt.Sprintf("Unrecognized address '%v'. Check spelling or be more specific.", address)}
 	}
-	return toGeo.Data[0], err
+	return toGeo, err
 }
 
-func (s *Service) getTripRoute(ctx context.Context, trip *t.Trip) (*t.Route, error) {
+func (s *Service) tripRoute(ctx context.Context, trip *t.Trip) (*t.Route, error) {
 	route, err := s.osrm.Route(ctx, trip)
 	if err != nil {
-		s.Logger.Errorw(err.Error(),
-			"from", trip.From.Label, "to", trip.To.Label)
+		s.Logger.Errorf("Error routing trip (%v,%v) to (%v,%v): %v",
+			trip.From.Latitude, trip.From.Longitude, trip.To.Latitude, trip.From.Longitude, err.Error())
 		return nil, CodeError{code: 500, msg: "Internal error retrieving trip route."}
 	}
 	return route, nil
@@ -181,18 +224,21 @@ func (s *Service) steps(route *t.Route) []t.Step {
 	var currentDuration, goalDuration float64
 	goalDuration = durationStep
 	for i, step := range routeSteps {
-		currentDuration += step.StepDuration
 		if currentDuration >= goalDuration {
 			weatherStep := routeSteps[i]
 			weatherStep.TotalDuration = currentDuration
+			if weatherStep.Name == "" {
+				weatherStep.Name = s.lastNamedStep(routeSteps, i)
+			}
 			weatherSteps = append(weatherSteps, weatherStep)
 			goalDuration = currentDuration + durationStep
 		}
+		currentDuration += step.StepDuration
 	}
 	return weatherSteps
 }
 
-func (s *Service) hourlyWeather(ctx context.Context, steps []t.Step) {
+func (s *Service) weather(ctx context.Context, steps []t.Step, delay int64) {
 	wg := new(sync.WaitGroup)
 	wg.Add(len(steps))
 
@@ -200,44 +246,87 @@ func (s *Service) hourlyWeather(ctx context.Context, steps []t.Step) {
 		i, step := i, step
 		go func() {
 			defer wg.Done()
-			unixTime := time.Now().Unix() + int64(step.TotalDuration)
+			unixTime := time.Now().Unix() + int64(step.TotalDuration) + delay
 			stepHour := time.Unix(unixTime, 0).UTC().Truncate(time.Hour).UTC().Unix()
-			geoResponse := s.rc.GeoRadius(ctx, strconv.FormatInt(stepHour, 10), step.Longitude, step.Latitude,
-				&redis.GeoRadiusQuery{
-					Radius:    10,
-					Unit:      "km",
-					WithCoord: true,
-					WithDist:  true,
-					Count:     1,
-					Sort:      "ASC",
-				})
-			locations, err := geoResponse.Result()
-			if err != nil {
-				s.Logger.Errorf("Redis error when fetching GeoRadius for (%v, %v): %v",
-					step.Latitude, step.Longitude, err.Error())
-			}
-			if len(locations) > 0 {
-				var redisWeather t.RedisHourlyWeather
-				err := json.Unmarshal([]byte(locations[0].Name), &redisWeather)
+			if !s.disableRedis {
+				geoResponse := s.rc.GeoRadius(ctx, strconv.FormatInt(stepHour, 10), step.Coordinates.Longitude, step.Coordinates.Latitude,
+					&redis.GeoRadiusQuery{
+						Radius:    10,
+						Unit:      "km",
+						WithCoord: true,
+						WithDist:  true,
+						Count:     1,
+						Sort:      "ASC",
+					})
+				locations, err := geoResponse.Result()
 				if err != nil {
-					s.Logger.Errorf("Error unmarshalling redis weather for (%v, %v): %v",
-						step.Latitude, step.Longitude, err.Error())
-				} else {
-					step.HourlyWeather = redisWeather.Hourly
-					steps[i] = step
-					return
+					s.Logger.Errorf("Redis error when fetching GeoRadius for (%v, %v): %v",
+						step.Coordinates.Latitude, step.Coordinates.Longitude, err.Error())
+				}
+				if len(locations) > 0 {
+					var redisWeather t.RedisHourlyWeather
+					err := json.Unmarshal([]byte(locations[0].Name), &redisWeather)
+					if err != nil {
+						s.Logger.Errorf("Error unmarshalling redis weather for (%v, %v): %v",
+							step.Coordinates.Latitude, step.Coordinates.Longitude, err.Error())
+					} else {
+						redisWeather.Hourly.Time = stepHour
+						step.HourlyWeather = redisWeather.Hourly
+						steps[i] = step
+						return
+					}
 				}
 			}
-			hourly, err := s.ow.GetHourlyWeather(ctx, step.Latitude, step.Longitude, stepHour)
+			hourly, err := s.ow.GetHourlyWeather(ctx, step.Coordinates, stepHour)
 			if err != nil {
 				s.Logger.Warnf("Error getting hourly weather data: %v", err.Error())
 				return
 			}
+			hourly.Time = stepHour
 			step.HourlyWeather = *hourly
 			steps[i] = step
 		}()
 	}
 	wg.Wait()
+}
+
+func (s *Service) response(ctx context.Context, steps []t.Step, req *JourneyRequest) (*JourneyResponse, error) {
+	resp := &JourneyResponse{}
+	for _, step := range steps {
+		if step.HourlyWeather.Pop >= req.minPop {
+			resp.Steps = append(resp.Steps, step)
+		}
+	}
+	if req.reverseGeo {
+		wg := new(sync.WaitGroup)
+		wg.Add(len(resp.Steps))
+		for i, step := range resp.Steps {
+			i, step := i, step
+			go func() {
+				defer wg.Done()
+				location, err := s.psc.ReverseGeoCode(ctx, step.Coordinates)
+				if err != nil {
+					s.Logger.Warnf("Error reverse geocoding (%v,%v): %v",
+						step.Coordinates.Latitude, step.Coordinates.Longitude, err.Error())
+					return
+				}
+				step.Location = location
+				resp.Steps[i] = step
+			}()
+		}
+		wg.Wait()
+	}
+	return resp, nil
+}
+
+func (s *Service) lastNamedStep(routeSteps []t.Step, i int) string {
+	if i == 0 {
+		return ""
+	} else if routeSteps[i-1].Name != "" {
+		return routeSteps[i-1].Name
+	} else {
+		return s.lastNamedStep(routeSteps, i-1)
+	}
 }
 
 func (s *Service) writeError(w http.ResponseWriter, err error) {
@@ -250,4 +339,10 @@ func (s *Service) writeError(w http.ResponseWriter, err error) {
 		w.WriteHeader(500)
 		io.WriteString(w, "Internal server error")
 	}
+}
+
+func (s *Service) writeResponse(w http.ResponseWriter, resp *JourneyResponse) {
+	bodyBytes, _ := json.Marshal(resp)
+	w.WriteHeader(200)
+	io.WriteString(w, string(bodyBytes[:]))
 }

@@ -85,8 +85,10 @@ func (c Client) routeStepsFromOSRM(osrm []t.OSRMStep) []t.Step {
 		routeSteps = append(routeSteps, t.Step{
 			Name:         step.Name,
 			StepDuration: step.Duration,
-			Latitude:     step.Maneuver.Location[1],
-			Longitude:    step.Maneuver.Location[0],
+			Coordinates: t.Coordinates{
+				Latitude:  step.Maneuver.Location[1],
+				Longitude: step.Maneuver.Location[0],
+			},
 		})
 	}
 	return routeSteps

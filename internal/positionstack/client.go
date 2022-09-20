@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	wc "github.com/evanhutnik/wipercheck-service/internal/types"
+	t "github.com/evanhutnik/wipercheck-service/internal/types"
 	"io"
 	"net/http"
 	"net/url"
@@ -45,8 +45,8 @@ func New(opts ...ClientOption) *Client {
 	return c
 }
 
-func (c *Client) GeoCode(ctx context.Context, location string) (*wc.GeoCodeResponse, error) {
-	req, err := url.Parse(c.baseUrl)
+func (c *Client) GeoCode(ctx context.Context, location string) (*t.Coordinates, error) {
+	req, err := url.Parse(fmt.Sprintf("%v/forward", c.baseUrl))
 	if err != nil {
 		err = errors.New(fmt.Sprintf("failed to parse positionstack baseUrl %s: %s", c.baseUrl, err.Error()))
 		return nil, err
@@ -61,7 +61,7 @@ func (c *Client) GeoCode(ctx context.Context, location string) (*wc.GeoCodeRespo
 	ctxReq, _ := http.NewRequestWithContext(ctx, "GET", req.String(), nil)
 	resp, err := http.DefaultClient.Do(ctxReq)
 	if err != nil {
-		err = errors.New(fmt.Sprintf("error on positionstack api request: %s", err.Error()))
+		err = errors.New(fmt.Sprintf("error on positionstack geocode request: %s", err.Error()))
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -75,11 +75,64 @@ func (c *Client) GeoCode(ctx context.Context, location string) (*wc.GeoCodeRespo
 		return nil, err
 	}
 
-	var respObj wc.GeoCodeResponse
+	var respObj t.PSForwardResponse
 	err = json.Unmarshal(body, &respObj)
 	if err != nil {
 		err = errors.New(fmt.Sprintf("error unmarshalling response from positionstack: %s", err.Error()))
 		return nil, err
+	} else if len(respObj.Data) == 0 {
+		return nil, nil
 	}
-	return &respObj, nil
+	return &t.Coordinates{
+		Latitude:  respObj.Data[0].Latitude,
+		Longitude: respObj.Data[0].Longitude,
+	}, nil
+}
+
+func (c *Client) ReverseGeoCode(ctx context.Context, coords t.Coordinates) (*t.Location, error) {
+	req, err := url.Parse(fmt.Sprintf("%v/reverse", c.baseUrl))
+	if err != nil {
+		err = errors.New(fmt.Sprintf("failed to parse positionstack baseUrl %s: %s", c.baseUrl, err.Error()))
+		return nil, err
+	}
+
+	q := req.Query()
+	q.Add("access_key", c.apiKey)
+	q.Add("query", fmt.Sprintf("%v,%v", coords.Latitude, coords.Longitude))
+	q.Add("limit", "1")
+	req.RawQuery = q.Encode()
+
+	ctxReq, _ := http.NewRequestWithContext(ctx, "GET", req.String(), nil)
+	resp, err := http.DefaultClient.Do(ctxReq)
+	if err != nil {
+		err = errors.New(fmt.Sprintf("error on positionstack reverse geocode request: %s", err.Error()))
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		err = errors.New(fmt.Sprintf("error code %d returned from positionstack", resp.StatusCode))
+		return nil, err
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		err = errors.New(fmt.Sprintf("error reading positionstack response body: %s", err.Error()))
+		return nil, err
+	}
+
+	var respObj t.PSReverseResponse
+	err = json.Unmarshal(body, &respObj)
+	if err != nil {
+		err = errors.New(fmt.Sprintf("error unmarshalling response from positionstack: %s", err.Error()))
+		return nil, err
+	} else if len(respObj.Data) == 0 {
+		return nil, nil
+	}
+
+	return &t.Location{
+		Number:   respObj.Data[0].Number,
+		Street:   respObj.Data[0].Street,
+		Locality: respObj.Data[0].Locality,
+		Region:   respObj.Data[0].Region,
+		Country:  respObj.Data[0].Country,
+	}, nil
 }

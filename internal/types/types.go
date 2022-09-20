@@ -1,18 +1,21 @@
 package types
 
-type GeoCodeResponse struct {
-	Data []*Coordinate
+type Coordinates struct {
+	Latitude  float64 `json:"latitude,omitempty"`
+	Longitude float64 `json:"longitude,omitempty"`
 }
 
-type Coordinate struct {
-	Latitude  float64 `json:"latitude"`
-	Longitude float64 `json:"longitude"`
-	Label     string  `json:"label"`
+type Location struct {
+	Number   string `json:"number,omitempty"`
+	Street   string `json:"street,omitempty"`
+	Locality string `json:"locality,omitempty"`
+	Region   string `json:"region,omitempty"`
+	Country  string `json:"country,omitempty"`
 }
 
 type Trip struct {
-	From *Coordinate
-	To   *Coordinate
+	From *Coordinates
+	To   *Coordinates
 }
 
 type Route struct {
@@ -21,12 +24,12 @@ type Route struct {
 }
 
 type Step struct {
-	Name          string
-	StepDuration  float64
-	TotalDuration float64
-	Latitude      float64
-	Longitude     float64
-	HourlyWeather HourlyWeather
+	Name          string        `json:"name,omitempty"`
+	StepDuration  float64       `json:"stepDuration,omitempty"`
+	TotalDuration float64       `json:"totalDuration,omitempty"`
+	Coordinates   Coordinates   `json:"coordinates,omitempty"`
+	HourlyWeather HourlyWeather `json:"hourlyWeather,omitempty"`
+	Location      *Location     `json:"location,omitempty"`
 }
 
 type WeatherData struct {
@@ -36,16 +39,15 @@ type WeatherData struct {
 }
 
 type HourlyWeather struct {
-	Time       int64 `json:"dt"`
-	Conditions Conditions
-	Pop        float64
+	Time       int64      `json:"unixTime,omitempty"`
+	Conditions Conditions `json:"conditions,omitempty"`
+	Pop        float64    `json:"pop,omitempty"`
 }
 
 type Conditions struct {
-	Id          int
-	Main        string
-	Description string
-	Icon        string
+	Id          int    `json:"id,omitempty"`
+	Main        string `json:"main,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 type RedisHourlyWeather struct {
@@ -54,6 +56,28 @@ type RedisHourlyWeather struct {
 }
 
 // External Objects
+
+type PSForwardResponse struct {
+	Data []*PSCoordinate
+}
+
+type PSCoordinate struct {
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+	Label     string  `json:"label"`
+}
+
+type PSReverseResponse struct {
+	Data []*PSLocation
+}
+
+type PSLocation struct {
+	Number   string
+	Street   string
+	Locality string
+	Region   string
+	Country  string
+}
 
 type OSRMResponse struct {
 	Code   string      `json:"code"`
@@ -102,7 +126,6 @@ type OWConditions struct {
 	Id          int
 	Main        string
 	Description string
-	Icon        string
 }
 
 type OWHourlyWeather struct {
