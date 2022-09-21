@@ -24,12 +24,12 @@ type Route struct {
 }
 
 type Step struct {
-	Name          string        `json:"name,omitempty"`
-	StepDuration  float64       `json:"stepDuration,omitempty"`
-	TotalDuration float64       `json:"totalDuration,omitempty"`
-	Coordinates   Coordinates   `json:"coordinates,omitempty"`
-	HourlyWeather HourlyWeather `json:"hourlyWeather,omitempty"`
-	Location      *Location     `json:"location,omitempty"`
+	Name          string         `json:"name,omitempty"`
+	StepDuration  float64        `json:"stepDuration,omitempty"`
+	TotalDuration float64        `json:"totalDuration,omitempty"`
+	Coordinates   Coordinates    `json:"coordinates,omitempty"`
+	HourlyWeather *HourlyWeather `json:"hourlyWeather,omitempty"`
+	Location      *Location      `json:"location,omitempty"`
 }
 
 type WeatherData struct {
@@ -52,7 +52,7 @@ type Conditions struct {
 
 type RedisHourlyWeather struct {
 	Rand   float64
-	Hourly HourlyWeather
+	Hourly *HourlyWeather
 }
 
 // External Objects

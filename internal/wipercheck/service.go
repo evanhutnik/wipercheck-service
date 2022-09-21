@@ -116,9 +116,7 @@ func (s *Service) Journey(ctx context.Context, r *http.Request) (*JourneyRespons
 		return nil, err
 	}
 
-	steps := s.steps(route)
-
-	s.weather(ctx, steps, req.delay)
+	steps := s.weather(ctx, route, req.delay)
 
 	resp, err := s.response(ctx, steps, req)
 
@@ -238,10 +236,11 @@ func (s *Service) steps(route *t.Route) []t.Step {
 	return weatherSteps
 }
 
-func (s *Service) weather(ctx context.Context, steps []t.Step, delay int64) {
+func (s *Service) weather(ctx context.Context, route *t.Route, delay int64) []t.Step {
+	steps := s.steps(route)
+
 	wg := new(sync.WaitGroup)
 	wg.Add(len(steps))
-
 	for i, step := range steps {
 		i, step := i, step
 		go func() {
@@ -283,11 +282,18 @@ func (s *Service) weather(ctx context.Context, steps []t.Step, delay int64) {
 				return
 			}
 			hourly.Time = stepHour
-			step.HourlyWeather = *hourly
+			step.HourlyWeather = hourly
 			steps[i] = step
 		}()
 	}
 	wg.Wait()
+	var weatherSteps []t.Step
+	for _, step := range steps {
+		if step.HourlyWeather != nil {
+			weatherSteps = append(weatherSteps, step)
+		}
+	}
+	return weatherSteps
 }
 
 func (s *Service) response(ctx context.Context, steps []t.Step, req *JourneyRequest) (*JourneyResponse, error) {

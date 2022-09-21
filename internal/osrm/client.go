@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	api "github.com/evanhutnik/wipercheck-service/internal"
 	t "github.com/evanhutnik/wipercheck-service/internal/types"
 	"io"
 	"net/http"
@@ -49,16 +50,11 @@ func (c *Client) Route(ctx context.Context, trip *t.Trip) (*t.Route, error) {
 	req.RawQuery = q.Encode()
 
 	ctxReq, _ := http.NewRequestWithContext(ctx, "GET", req.String(), nil)
-	resp, err := http.DefaultClient.Do(ctxReq)
+	resp, err := api.GetWithRetry(ctxReq, "osrm")
 	if err != nil {
-		err = errors.New(fmt.Sprintf("error on osrm api request: %s", err.Error()))
 		return nil, err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		err = errors.New(fmt.Sprintf("error code %d returned from osrm", resp.StatusCode))
-		return nil, err
-	}
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		err = errors.New(fmt.Sprintf("error reading osrm response body: %s", err.Error()))
