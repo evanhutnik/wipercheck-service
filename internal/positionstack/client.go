@@ -5,12 +5,39 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	api "github.com/evanhutnik/wipercheck-service/internal"
+	"github.com/evanhutnik/wipercheck-service/internal/common"
 	t "github.com/evanhutnik/wipercheck-service/internal/types"
 	"io"
 	"net/http"
 	"net/url"
 )
+
+type ForwardResponse struct {
+	Data []*Coordinate
+}
+
+type Coordinate struct {
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+	Label     string  `json:"label"`
+}
+
+type ReverseResponse struct {
+	Data []*Location
+}
+
+type Location struct {
+	Number   string
+	Street   string
+	Locality string
+	Region   string
+	Country  string
+}
+
+type Client struct {
+	apiKey  string
+	baseUrl string
+}
 
 type ClientOption func(*Client)
 
@@ -24,11 +51,6 @@ func BaseUrlOption(baseUrl string) ClientOption {
 	return func(c *Client) {
 		c.baseUrl = baseUrl
 	}
-}
-
-type Client struct {
-	apiKey  string
-	baseUrl string
 }
 
 func New(opts ...ClientOption) *Client {
@@ -60,7 +82,7 @@ func (c *Client) GeoCode(ctx context.Context, location string) (*t.Coordinates, 
 	req.RawQuery = q.Encode()
 
 	ctxReq, _ := http.NewRequestWithContext(ctx, "GET", req.String(), nil)
-	resp, err := api.GetWithRetry(ctxReq, "positionstack")
+	resp, err := common.GetWithRetry(ctxReq, "positionstack")
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +93,7 @@ func (c *Client) GeoCode(ctx context.Context, location string) (*t.Coordinates, 
 		return nil, err
 	}
 
-	var respObj t.PSForwardResponse
+	var respObj ForwardResponse
 	err = json.Unmarshal(body, &respObj)
 	if err != nil {
 		err = errors.New(fmt.Sprintf("error unmarshalling response from positionstack: %s", err.Error()))
@@ -115,7 +137,7 @@ func (c *Client) ReverseGeoCode(ctx context.Context, coords t.Coordinates) (*t.L
 		return nil, err
 	}
 
-	var respObj t.PSReverseResponse
+	var respObj ReverseResponse
 	err = json.Unmarshal(body, &respObj)
 	if err != nil {
 		err = errors.New(fmt.Sprintf("error unmarshalling response from positionstack: %s", err.Error()))

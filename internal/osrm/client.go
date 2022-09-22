@@ -5,23 +5,66 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	api "github.com/evanhutnik/wipercheck-service/internal"
+	"github.com/evanhutnik/wipercheck-service/internal/common"
 	t "github.com/evanhutnik/wipercheck-service/internal/types"
 	"io"
 	"net/http"
 	"net/url"
 )
 
+type Response struct {
+	Code   string  `json:"code"`
+	Routes []Route `json:"routes"`
+}
+
+type Route struct {
+	WeightName string  `json:"weight_name"`
+	Weight     float64 `json:"weight"`
+	Duration   float64 `json:"duration"`
+	Distance   float64 `json:"distance"`
+	Legs       []Leg   `json:"legs"`
+}
+
+type Leg struct {
+	Summary  string  `json:"summary"`
+	Weight   float64 `json:"weight"`
+	Duration float64 `json:"duration"`
+	Distance float64 `json:"distance"`
+	Steps    []Step  `json:"steps"`
+}
+
+type Step struct {
+	Geometry     string   `json:"geometry"`
+	Mode         string   `json:"mode"`
+	DrivingSide  string   `json:"driving_side"`
+	Name         string   `json:"name"`
+	Weight       float64  `json:"weight"`
+	Duration     float64  `json:"duration"`
+	Distance     float64  `json:"distance"`
+	Destinations string   `json:"destinations,omitempty"`
+	Ref          string   `json:"ref,omitempty"`
+	Maneuver     Maneuver `json:"maneuver"`
+}
+
+type Maneuver struct {
+	BearingAfter  int       `json:"bearing_after"`
+	BearingBefore int       `json:"bearing_before"`
+	Location      []float64 `json:"location"`
+	Type          string    `json:"type"`
+	Modifier      string    `json:"modifier,omitempty"`
+	Exit          int       `json:"exit,omitempty"`
+}
+
 type ClientOption func(*Client)
+
+type Client struct {
+	baseUrl string
+}
 
 func BaseUrlOption(baseUrl string) ClientOption {
 	return func(c *Client) {
 		c.baseUrl = baseUrl
 	}
-}
-
-type Client struct {
-	baseUrl string
 }
 
 func New(opts ...ClientOption) *Client {
@@ -50,7 +93,7 @@ func (c *Client) Route(ctx context.Context, trip *t.Trip) (*t.Route, error) {
 	req.RawQuery = q.Encode()
 
 	ctxReq, _ := http.NewRequestWithContext(ctx, "GET", req.String(), nil)
-	resp, err := api.GetWithRetry(ctxReq, "osrm")
+	resp, err := common.GetWithRetry(ctxReq, "osrm")
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +104,7 @@ func (c *Client) Route(ctx context.Context, trip *t.Trip) (*t.Route, error) {
 		return nil, err
 	}
 
-	var respObj t.OSRMResponse
+	var respObj Response
 	err = json.Unmarshal(body, &respObj)
 	if err != nil {
 		err = errors.New(fmt.Sprintf("error unmarshalling response from osrm: %s", err.Error()))
@@ -75,7 +118,7 @@ func (c *Client) Route(ctx context.Context, trip *t.Trip) (*t.Route, error) {
 	return route, nil
 }
 
-func (c Client) routeStepsFromOSRM(osrm []t.OSRMStep) []t.Step {
+func (c Client) routeStepsFromOSRM(osrm []Step) []t.Step {
 	var routeSteps []t.Step
 	for _, step := range osrm {
 		routeSteps = append(routeSteps, t.Step{

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	api "github.com/evanhutnik/wipercheck-service/internal"
+	"github.com/evanhutnik/wipercheck-service/internal/common"
 	"github.com/evanhutnik/wipercheck-service/internal/types"
 	"io"
 	"net/http"
@@ -13,7 +13,30 @@ import (
 	"strconv"
 )
 
+type Response struct {
+	Lat    float64
+	Lon    float64
+	Hourly []HourlyWeather
+}
+
+type HourlyWeather struct {
+	Time       int64 `json:"dt"`
+	Pop        float64
+	Conditions []Conditions `json:"weather"`
+}
+
+type Conditions struct {
+	Id          int
+	Main        string
+	Description string
+}
+
 type ClientOption func(*Client)
+
+type Client struct {
+	apiKey  string
+	baseUrl string
+}
 
 func ApiKeyOption(apiKey string) ClientOption {
 	return func(c *Client) {
@@ -25,11 +48,6 @@ func BaseUrlOption(baseUrl string) ClientOption {
 	return func(c *Client) {
 		c.baseUrl = baseUrl
 	}
-}
-
-type Client struct {
-	apiKey  string
-	baseUrl string
 }
 
 func New(opts ...ClientOption) *Client {
@@ -48,7 +66,7 @@ func New(opts ...ClientOption) *Client {
 	return c
 }
 
-func (c Client) GetWeather(ctx context.Context, lat float64, long float64) (*types.WeatherData, error) {
+func (c Client) GetWeather(ctx context.Context, lat float64, long float64) ([]types.HourlyWeather, error) {
 	req, err := url.Parse(c.baseUrl)
 	if err != nil {
 		err = errors.New(fmt.Sprintf("failed to parse baseUrl %s: %s", c.baseUrl, err.Error()))
@@ -64,7 +82,7 @@ func (c Client) GetWeather(ctx context.Context, lat float64, long float64) (*typ
 	req.RawQuery = q.Encode()
 
 	ctxReq, _ := http.NewRequestWithContext(ctx, "GET", req.String(), nil)
-	resp, err := api.GetWithRetry(ctxReq, "openweather")
+	resp, err := common.GetWithRetry(ctxReq, "openweather")
 	if err != nil {
 		return nil, err
 	}
@@ -76,20 +94,14 @@ func (c Client) GetWeather(ctx context.Context, lat float64, long float64) (*typ
 		return nil, err
 	}
 
-	var respObj types.OWResponse
+	var respObj Response
 	err = json.Unmarshal(body, &respObj)
 	if err != nil {
 		err = errors.New(fmt.Sprintf("error unmarshalling response from openweather: %s", err.Error()))
 		return nil, err
 	}
 
-	wr := &types.WeatherData{
-		Lat:    respObj.Lat,
-		Lon:    respObj.Lon,
-		Hourly: c.hourlyWeatherFromOW(respObj.Hourly),
-	}
-
-	return wr, nil
+	return c.hourlyWeatherFromOW(respObj.Hourly), nil
 }
 
 func (c Client) GetHourlyWeather(ctx context.Context, coords types.Coordinates, time int64) (*types.HourlyWeather, error) {
@@ -97,7 +109,7 @@ func (c Client) GetHourlyWeather(ctx context.Context, coords types.Coordinates, 
 	if err != nil {
 		return nil, err
 	}
-	for _, hourly := range weatherData.Hourly {
+	for _, hourly := range weatherData {
 		if hourly.Time == time {
 			return &hourly, nil
 		}
@@ -105,7 +117,7 @@ func (c Client) GetHourlyWeather(ctx context.Context, coords types.Coordinates, 
 	return nil, errors.New("no hourly weather found for time")
 }
 
-func (c Client) hourlyWeatherFromOW(owHourly []types.OWHourlyWeather) []types.HourlyWeather {
+func (c Client) hourlyWeatherFromOW(owHourly []HourlyWeather) []types.HourlyWeather {
 	var hourly []types.HourlyWeather
 	for _, owHour := range owHourly {
 		var conditions types.Conditions
