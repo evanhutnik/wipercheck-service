@@ -87,8 +87,14 @@ func New() *Service {
 func (s *Service) Start() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/journey", s.JourneyHandler)
+	mux.HandleFunc("/health", s.HealthCheckHandler)
 
-	_ = http.ListenAndServe(":80", mux)
+	_ = http.ListenAndServe(":8080", mux)
+}
+
+func (s *Service) HealthCheckHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(200)
+	io.WriteString(w, "OK")
 }
 
 func (s *Service) JourneyHandler(w http.ResponseWriter, r *http.Request) {
