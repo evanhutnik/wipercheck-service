@@ -13,6 +13,7 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -30,8 +31,8 @@ type JourneyRequest struct {
 
 type JourneyResponse struct {
 	Error   string          `json:"error,omitempty"`
-	Steps   []t.Step        `json:"steps,omitempty"`
 	Summary []t.SummaryStep `json:"summary,omitempty"`
+	Steps   []t.Step        `json:"steps,omitempty"`
 }
 
 type CodeError struct {
@@ -220,7 +221,6 @@ func (s *Service) steps(route *t.Route) []t.Step {
 	default:
 		durationStep = tripDuration / 3
 	}
-
 	routeSteps := route.Steps
 	var weatherSteps []t.Step
 	var currentDuration, goalDuration float64
@@ -228,7 +228,8 @@ func (s *Service) steps(route *t.Route) []t.Step {
 	for i, step := range routeSteps {
 		if currentDuration >= goalDuration {
 			weatherStep := routeSteps[i]
-			weatherStep.TotalDuration = currentDuration
+			weatherStep.TotalDuration = math.Round(currentDuration)
+			weatherStep.StepDuration = math.Round(weatherStep.StepDuration)
 			if weatherStep.Name == "" {
 				weatherStep.Name = lastNamedStep(routeSteps, i)
 			}
@@ -326,14 +327,16 @@ func (s *Service) response(ctx context.Context, steps []t.Step, req *JourneyRequ
 	wg.Wait()
 
 	var summary []t.SummaryStep
-	for _, step := range resp.Steps {
-		weatherDesc := step.Weather.Conditions.Description
-		summaryStep := t.SummaryStep{
-			Location: summaryStepLocation(step.Location),
-			Pop:      step.Weather.Pop,
-			Type:     strings.ToUpper(string(weatherDesc[0])) + weatherDesc[1:],
+	for i, step := range resp.Steps {
+		if len(summary) == 0 || summary[len(summary)-1].Pop != step.Weather.Pop*100 || i == len(resp.Steps)-1 {
+			weatherDesc := step.Weather.Conditions.Description
+			summaryStep := t.SummaryStep{
+				Location:   summaryStepLocation(step.Location),
+				Pop:        step.Weather.Pop * 100,
+				Conditions: strings.ToUpper(string(weatherDesc[0])) + weatherDesc[1:],
+			}
+			summary = append(summary, summaryStep)
 		}
-		summary = append(summary, summaryStep)
 	}
 	resp.Summary = summary
 
@@ -342,12 +345,6 @@ func (s *Service) response(ctx context.Context, steps []t.Step, req *JourneyRequ
 
 func summaryStepLocation(loc *t.Location) string {
 	var builder strings.Builder
-	if loc.Number != "" {
-		builder.WriteString(loc.Number + " ")
-	}
-	if loc.Street != "" {
-		builder.WriteString(loc.Street + ", ")
-	}
 	if loc.Locality != "" {
 		builder.WriteString(loc.Locality + ", ")
 	}

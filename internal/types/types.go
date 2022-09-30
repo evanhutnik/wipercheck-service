@@ -1,9 +1,9 @@
 package types
 
 type SummaryStep struct {
-	Location string  `json:"location,omitempty"`
-	Pop      float64 `json:"precipChance,omitempty"`
-	Type     string  `json:"type,omitempty"`
+	Location   string  `json:"location,omitempty"`
+	Conditions string  `json:"conditions,omitempty"`
+	Pop        float64 `json:"precipChance"`
 }
 
 type Route struct {
