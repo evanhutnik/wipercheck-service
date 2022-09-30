@@ -19,6 +19,7 @@ bin/
 
 # Configuration files
 configs
+.env
 
 # Local redis data
 *.rdb

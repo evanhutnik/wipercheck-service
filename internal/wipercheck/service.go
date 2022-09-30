@@ -9,27 +9,29 @@ import (
 	ps "github.com/evanhutnik/wipercheck-service/internal/positionstack"
 	t "github.com/evanhutnik/wipercheck-service/internal/types"
 	"github.com/go-redis/redis/v8"
+	_ "github.com/joho/godotenv/autoload"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 	"io"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
 
 type JourneyRequest struct {
-	from       string
-	to         string
-	reverseGeo bool
-	minPop     float64
-	delay      int64
+	from   string
+	to     string
+	minPop float64
+	delay  int64
 }
 
 type JourneyResponse struct {
-	Error string   `json:"error,omitempty"`
-	Steps []t.Step `json:"steps,omitempty"`
+	Error   string          `json:"error,omitempty"`
+	Steps   []t.Step        `json:"steps,omitempty"`
+	Summary []t.SummaryStep `json:"summary,omitempty"`
 }
 
 type CodeError struct {
@@ -100,10 +102,10 @@ func (s *Service) HealthCheckHandler(w http.ResponseWriter, r *http.Request) {
 func (s *Service) JourneyHandler(w http.ResponseWriter, r *http.Request) {
 	resp, err := s.Journey(r.Context(), r)
 	if err != nil {
-		s.writeError(w, err)
+		writeError(w, err)
 		return
 	}
-	s.writeResponse(w, resp)
+	writeResponse(w, resp)
 }
 
 func (s *Service) Journey(ctx context.Context, r *http.Request) (*JourneyResponse, error) {
@@ -140,10 +142,6 @@ func (s *Service) parseRequest(r *http.Request) (*JourneyRequest, error) {
 	req := &JourneyRequest{
 		from: from,
 		to:   to,
-	}
-	reverseGeo, err := strconv.ParseBool(r.URL.Query().Get("reverseGeo"))
-	if err == nil {
-		req.reverseGeo = reverseGeo
 	}
 	minPop, err := strconv.ParseFloat(r.URL.Query().Get("minPop"), 64)
 	if err == nil {
@@ -232,7 +230,7 @@ func (s *Service) steps(route *t.Route) []t.Step {
 			weatherStep := routeSteps[i]
 			weatherStep.TotalDuration = currentDuration
 			if weatherStep.Name == "" {
-				weatherStep.Name = s.lastNamedStep(routeSteps, i)
+				weatherStep.Name = lastNamedStep(routeSteps, i)
 			}
 			weatherSteps = append(weatherSteps, weatherStep)
 			goalDuration = currentDuration + durationStep
@@ -276,7 +274,7 @@ func (s *Service) weather(ctx context.Context, route *t.Route, delay int64) []t.
 							step.Coordinates.Latitude, step.Coordinates.Longitude, err.Error())
 					} else {
 						redisWeather.Hourly.Time = stepHour
-						step.HourlyWeather = redisWeather.Hourly
+						step.Weather = redisWeather.Hourly
 						steps[i] = step
 						return
 					}
@@ -288,14 +286,14 @@ func (s *Service) weather(ctx context.Context, route *t.Route, delay int64) []t.
 				return
 			}
 			hourly.Time = stepHour
-			step.HourlyWeather = hourly
+			step.Weather = hourly
 			steps[i] = step
 		}()
 	}
 	wg.Wait()
 	var weatherSteps []t.Step
 	for _, step := range steps {
-		if step.HourlyWeather != nil {
+		if step.Weather != nil {
 			weatherSteps = append(weatherSteps, step)
 		}
 	}
@@ -305,43 +303,71 @@ func (s *Service) weather(ctx context.Context, route *t.Route, delay int64) []t.
 func (s *Service) response(ctx context.Context, steps []t.Step, req *JourneyRequest) (*JourneyResponse, error) {
 	resp := &JourneyResponse{}
 	for _, step := range steps {
-		if step.HourlyWeather.Pop >= req.minPop {
+		if step.Weather.Pop >= req.minPop {
 			resp.Steps = append(resp.Steps, step)
 		}
 	}
-	if req.reverseGeo {
-		wg := new(sync.WaitGroup)
-		wg.Add(len(resp.Steps))
-		for i, step := range resp.Steps {
-			i, step := i, step
-			go func() {
-				defer wg.Done()
-				location, err := s.psc.ReverseGeoCode(ctx, step.Coordinates)
-				if err != nil {
-					s.Logger.Warnf("Error reverse geocoding (%v,%v): %v",
-						step.Coordinates.Latitude, step.Coordinates.Longitude, err.Error())
-					return
-				}
-				step.Location = location
-				resp.Steps[i] = step
-			}()
-		}
-		wg.Wait()
+	wg := new(sync.WaitGroup)
+	wg.Add(len(resp.Steps))
+	for i, step := range resp.Steps {
+		i, step := i, step
+		go func() {
+			defer wg.Done()
+			location, err := s.psc.ReverseGeoCode(ctx, step.Coordinates)
+			if err != nil {
+				s.Logger.Warnf("Error reverse geocoding (%v,%v): %v",
+					step.Coordinates.Latitude, step.Coordinates.Longitude, err.Error())
+				return
+			}
+			step.Location = location
+			resp.Steps[i] = step
+		}()
 	}
+	wg.Wait()
+
+	var summary []t.SummaryStep
+	for _, step := range resp.Steps {
+		weatherDesc := step.Weather.Conditions.Description
+		summaryStep := t.SummaryStep{
+			Location: summaryStepLocation(step.Location),
+			Pop:      step.Weather.Pop,
+			Type:     strings.ToUpper(string(weatherDesc[0])) + weatherDesc[1:],
+		}
+		summary = append(summary, summaryStep)
+	}
+	resp.Summary = summary
+
 	return resp, nil
 }
 
-func (s *Service) lastNamedStep(routeSteps []t.Step, i int) string {
+func summaryStepLocation(loc *t.Location) string {
+	var builder strings.Builder
+	if loc.Number != "" {
+		builder.WriteString(loc.Number + " ")
+	}
+	if loc.Street != "" {
+		builder.WriteString(loc.Street + ", ")
+	}
+	if loc.Locality != "" {
+		builder.WriteString(loc.Locality + ", ")
+	}
+	if loc.Region != "" {
+		builder.WriteString(loc.Region)
+	}
+	return builder.String()
+}
+
+func lastNamedStep(routeSteps []t.Step, i int) string {
 	if i == 0 {
 		return ""
 	} else if routeSteps[i-1].Name != "" {
 		return routeSteps[i-1].Name
 	} else {
-		return s.lastNamedStep(routeSteps, i-1)
+		return lastNamedStep(routeSteps, i-1)
 	}
 }
 
-func (s *Service) writeError(w http.ResponseWriter, err error) {
+func writeError(w http.ResponseWriter, err error) {
 	codeErr, ok := err.(CodeError)
 	if ok {
 		bodyBytes, _ := json.Marshal(JourneyResponse{Error: codeErr.Error()})
@@ -353,7 +379,7 @@ func (s *Service) writeError(w http.ResponseWriter, err error) {
 	}
 }
 
-func (s *Service) writeResponse(w http.ResponseWriter, resp *JourneyResponse) {
+func writeResponse(w http.ResponseWriter, resp *JourneyResponse) {
 	bodyBytes, _ := json.Marshal(resp)
 	w.WriteHeader(200)
 	io.WriteString(w, string(bodyBytes[:]))

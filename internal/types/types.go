@@ -1,22 +1,28 @@
 package types
 
+type SummaryStep struct {
+	Location string  `json:"location,omitempty"`
+	Pop      float64 `json:"precipChance,omitempty"`
+	Type     string  `json:"type,omitempty"`
+}
+
 type Route struct {
 	Steps    []Step
 	Duration float64
 }
 
 type Step struct {
-	Name          string         `json:"name,omitempty"`
-	StepDuration  float64        `json:"stepDuration,omitempty"`
-	TotalDuration float64        `json:"totalDuration,omitempty"`
-	Coordinates   Coordinates    `json:"coordinates,omitempty"`
-	HourlyWeather *HourlyWeather `json:"hourlyWeather,omitempty"`
-	Location      *Location      `json:"location,omitempty"`
+	Name          string      `json:"name,omitempty"`
+	StepDuration  float64     `json:"stepDuration,omitempty"`
+	TotalDuration float64     `json:"totalDuration,omitempty"`
+	Coordinates   Coordinates `json:"coordinates,omitempty"`
+	Weather       *Weather    `json:"weather,omitempty"`
+	Location      *Location   `json:"location,omitempty"`
 }
 
-type HourlyWeather struct {
+type Weather struct {
 	Time       int64      `json:"unixTime,omitempty"`
-	Pop        float64    `json:"pop,omitempty"`
+	Pop        float64    `json:"precipPercent"`
 	Conditions Conditions `json:"conditions,omitempty"`
 }
 
@@ -46,5 +52,5 @@ type Coordinates struct {
 
 type RedisHourlyWeather struct {
 	Rand   float64
-	Hourly *HourlyWeather
+	Hourly *Weather
 }

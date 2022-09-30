@@ -66,7 +66,7 @@ func New(opts ...ClientOption) *Client {
 	return c
 }
 
-func (c Client) GetWeather(ctx context.Context, lat float64, long float64) ([]types.HourlyWeather, error) {
+func (c Client) GetWeather(ctx context.Context, lat float64, long float64) ([]types.Weather, error) {
 	req, err := url.Parse(c.baseUrl)
 	if err != nil {
 		err = errors.New(fmt.Sprintf("failed to parse baseUrl %s: %s", c.baseUrl, err.Error()))
@@ -104,7 +104,7 @@ func (c Client) GetWeather(ctx context.Context, lat float64, long float64) ([]ty
 	return c.hourlyWeatherFromOW(respObj.Hourly), nil
 }
 
-func (c Client) GetHourlyWeather(ctx context.Context, coords types.Coordinates, time int64) (*types.HourlyWeather, error) {
+func (c Client) GetHourlyWeather(ctx context.Context, coords types.Coordinates, time int64) (*types.Weather, error) {
 	weatherData, err := c.GetWeather(ctx, coords.Latitude, coords.Longitude)
 	if err != nil {
 		return nil, err
@@ -117,8 +117,8 @@ func (c Client) GetHourlyWeather(ctx context.Context, coords types.Coordinates, 
 	return nil, errors.New("no hourly weather found for time")
 }
 
-func (c Client) hourlyWeatherFromOW(owHourly []HourlyWeather) []types.HourlyWeather {
-	var hourly []types.HourlyWeather
+func (c Client) hourlyWeatherFromOW(owHourly []HourlyWeather) []types.Weather {
+	var hourly []types.Weather
 	for _, owHour := range owHourly {
 		var conditions types.Conditions
 		if len(owHour.Conditions) > 0 {
@@ -128,7 +128,7 @@ func (c Client) hourlyWeatherFromOW(owHourly []HourlyWeather) []types.HourlyWeat
 				Description: owHour.Conditions[0].Description,
 			}
 		}
-		hourly = append(hourly, types.HourlyWeather{
+		hourly = append(hourly, types.Weather{
 			Time:       owHour.Time,
 			Conditions: conditions,
 			Pop:        owHour.Pop,
