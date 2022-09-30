@@ -32,7 +32,7 @@ type JourneyRequest struct {
 type JourneyResponse struct {
 	Error   string          `json:"error,omitempty"`
 	Summary []t.SummaryStep `json:"summary,omitempty"`
-	Steps   []t.Step        `json:"steps,omitempty"`
+	Steps   []t.Step        `json:"detailedSteps,omitempty"`
 }
 
 type CodeError struct {
@@ -146,13 +146,16 @@ func (s *Service) parseRequest(r *http.Request) (*JourneyRequest, error) {
 	}
 	minPop, err := strconv.ParseFloat(r.URL.Query().Get("minPop"), 64)
 	if err == nil {
+		if minPop > 100 {
+			return nil, CodeError{code: 400, msg: "'minPop' parameter must be less than 100%"}
+		}
 		req.minPop = minPop
 	}
 
 	if r.URL.Query().Get("delay") != "" {
 		delay, err := strconv.ParseInt(r.URL.Query().Get("delay"), 10, 64)
-		if err != nil || delay > 43200 {
-			return nil, CodeError{code: 400, msg: "'delay' parameter must be an integer less than 43200 (12 hours)"}
+		if err != nil || delay > 720 {
+			return nil, CodeError{code: 400, msg: "'delay' parameter must be less than 720 minutes (12 hours)"}
 		}
 		req.delay = delay
 	}
