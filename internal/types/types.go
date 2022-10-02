@@ -21,8 +21,8 @@ type Step struct {
 }
 
 type Weather struct {
-	Time       int64      `json:"unixTime,omitempty"`
-	Pop        float64    `json:"precipPercent"`
+	Time       int64      `json:"-"`
+	Pop        float64    `json:"precipChance"`
 	Conditions Conditions `json:"conditions,omitempty"`
 }
 
@@ -30,6 +30,7 @@ type Conditions struct {
 	Id          int    `json:"id,omitempty"`
 	Main        string `json:"main,omitempty"`
 	Description string `json:"description,omitempty"`
+	IconURL     string `json:"iconURL,omitempty"`
 }
 
 type Location struct {

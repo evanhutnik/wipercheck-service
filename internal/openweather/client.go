@@ -29,6 +29,7 @@ type Conditions struct {
 	Id          int
 	Main        string
 	Description string
+	Icon        string
 }
 
 type ClientOption func(*Client)
@@ -126,6 +127,7 @@ func (c Client) hourlyWeatherFromOW(owHourly []HourlyWeather) []types.Weather {
 				Id:          owHour.Conditions[0].Id,
 				Main:        owHour.Conditions[0].Main,
 				Description: owHour.Conditions[0].Description,
+				IconURL:     fmt.Sprintf("http://openweathermap.org/img/wn/%v@2x.png", owHour.Conditions[0].Icon),
 			}
 		}
 		hourly = append(hourly, types.Weather{
