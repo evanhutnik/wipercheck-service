@@ -67,6 +67,19 @@ func New(opts ...ClientOption) *Client {
 	return c
 }
 
+func (c Client) GetHourlyWeather(ctx context.Context, coords types.Coordinates, time int64) (*types.Weather, error) {
+	weatherData, err := c.GetWeather(ctx, coords.Latitude, coords.Longitude)
+	if err != nil {
+		return nil, err
+	}
+	for _, hourly := range weatherData {
+		if hourly.Time == time {
+			return &hourly, nil
+		}
+	}
+	return nil, errors.New("no hourly weather found for time")
+}
+
 func (c Client) GetWeather(ctx context.Context, lat float64, long float64) ([]types.Weather, error) {
 	req, err := url.Parse(c.baseUrl)
 	if err != nil {
@@ -103,19 +116,6 @@ func (c Client) GetWeather(ctx context.Context, lat float64, long float64) ([]ty
 	}
 
 	return c.hourlyWeatherFromOW(respObj.Hourly), nil
-}
-
-func (c Client) GetHourlyWeather(ctx context.Context, coords types.Coordinates, time int64) (*types.Weather, error) {
-	weatherData, err := c.GetWeather(ctx, coords.Latitude, coords.Longitude)
-	if err != nil {
-		return nil, err
-	}
-	for _, hourly := range weatherData {
-		if hourly.Time == time {
-			return &hourly, nil
-		}
-	}
-	return nil, errors.New("no hourly weather found for time")
 }
 
 func (c Client) hourlyWeatherFromOW(owHourly []HourlyWeather) []types.Weather {

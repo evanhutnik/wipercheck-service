@@ -95,11 +95,13 @@ func (s *Service) Start() {
 	_ = http.ListenAndServe(":8080", mux)
 }
 
+// HealthCheckHandler is the handler called by the AWS application target group to determine if the service is healthy
 func (s *Service) HealthCheckHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(200)
 	io.WriteString(w, "OK")
 }
 
+// JourneyHandler is the handler for the /journey endpoint of wipercheck-service
 func (s *Service) JourneyHandler(w http.ResponseWriter, r *http.Request) {
 	resp, err := s.Journey(r.Context(), r)
 	if err != nil {
@@ -109,8 +111,9 @@ func (s *Service) JourneyHandler(w http.ResponseWriter, r *http.Request) {
 	writeResponse(w, resp)
 }
 
+// Journey contains the core logic for the service, from parsing the request to generating the response
 func (s *Service) Journey(ctx context.Context, r *http.Request) (*JourneyResponse, error) {
-	req, err := s.parseRequest(r)
+	req, err := s.validateRequest(r)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +135,8 @@ func (s *Service) Journey(ctx context.Context, r *http.Request) (*JourneyRespons
 	return resp, nil
 }
 
-func (s *Service) parseRequest(r *http.Request) (*JourneyRequest, error) {
+// validateRequest validates the arguments passed in the request
+func (s *Service) validateRequest(r *http.Request) (*JourneyRequest, error) {
 	from := r.URL.Query().Get("from")
 	to := r.URL.Query().Get("to")
 	if from == "" {
@@ -163,8 +167,10 @@ func (s *Service) parseRequest(r *http.Request) (*JourneyRequest, error) {
 	return req, nil
 }
 
+// tripCoordinates converts the 'to' and 'from' fields from unstructured text to coordinates
 func (s *Service) tripCoordinates(ctx context.Context, req *JourneyRequest) (*t.Trip, error) {
 	var fromCoord, toCoord *t.Coordinates
+	// spinning up separate goroutines to geocode the two addresses simultaneously
 	g := new(errgroup.Group)
 
 	g.Go(func() error {
@@ -178,6 +184,7 @@ func (s *Service) tripCoordinates(ctx context.Context, req *JourneyRequest) (*t.
 		return err
 	})
 
+	// both goroutines must complete before proceeding
 	if err := g.Wait(); err != nil {
 		return nil, err
 	}
@@ -187,6 +194,7 @@ func (s *Service) tripCoordinates(ctx context.Context, req *JourneyRequest) (*t.
 	}, nil
 }
 
+// geoCode is a wrapper function for handling errors returned from the PositionStack client GeoCode method
 func (s *Service) geoCode(ctx context.Context, address string) (*t.Coordinates, error) {
 	toGeo, err := s.psc.GeoCode(ctx, address)
 	if err != nil {
@@ -199,6 +207,7 @@ func (s *Service) geoCode(ctx context.Context, address string) (*t.Coordinates, 
 	return toGeo, err
 }
 
+// tripRoute is a wrapper function for handling errors returned from the OSRM client Route method
 func (s *Service) tripRoute(ctx context.Context, trip *t.Trip) (*t.Route, error) {
 	route, err := s.osrm.Route(ctx, trip)
 	if err != nil {
@@ -209,52 +218,21 @@ func (s *Service) tripRoute(ctx context.Context, trip *t.Trip) (*t.Route, error)
 	return route, nil
 }
 
-func (s *Service) steps(route *t.Route) []t.Step {
-	var tripDuration, durationStep float64
-	tripDuration = route.Duration
-	switch {
-	case tripDuration > 18000:
-		durationStep = tripDuration / 20
-	case tripDuration > 7200:
-		durationStep = 15 * 60
-	case tripDuration > 3600:
-		durationStep = 10 * 60
-	case tripDuration > 300:
-		durationStep = 5 * 60
-	default:
-		durationStep = tripDuration / 3
-	}
-	routeSteps := route.Steps
-	var weatherSteps []t.Step
-	var currentDuration, goalDuration float64
-	goalDuration = durationStep
-	for i, step := range routeSteps {
-		if currentDuration >= goalDuration {
-			weatherStep := routeSteps[i]
-			weatherStep.TotalDuration = math.Round(currentDuration)
-			weatherStep.StepDuration = math.Round(weatherStep.StepDuration)
-			if weatherStep.Name == "" {
-				weatherStep.Name = lastNamedStep(routeSteps, i)
-			}
-			weatherSteps = append(weatherSteps, weatherStep)
-			goalDuration = currentDuration + durationStep
-		}
-		currentDuration += step.StepDuration
-	}
-	return weatherSteps
-}
-
+// weather returns the relevant forecasted weather data for the user's trip
 func (s *Service) weather(ctx context.Context, route *t.Route, delay int64) []t.Step {
 	steps := s.steps(route)
 
+	// spinning up separate goroutines to analyze weather data of all steps simultaneously
 	wg := new(sync.WaitGroup)
 	wg.Add(len(steps))
 	for i, step := range steps {
+		// explicitly declaring values as they would change during execution due to async loop otherwise
 		i, step := i, step
 		go func() {
 			defer wg.Done()
 			unixTime := time.Now().Unix() + int64(step.TotalDuration) + delay
 			stepHour := time.Unix(unixTime, 0).UTC().Truncate(time.Hour).UTC().Unix()
+			// querying for forecasted weather data cached by wipercheck-loader
 			if !s.disableRedis {
 				geoResponse := s.rc.GeoRadius(ctx, strconv.FormatInt(stepHour, 10), step.Coordinates.Longitude, step.Coordinates.Latitude,
 					&redis.GeoRadiusQuery{
@@ -296,6 +274,7 @@ func (s *Service) weather(ctx context.Context, route *t.Route, delay int64) []t.
 	}
 	wg.Wait()
 	var weatherSteps []t.Step
+	// only including steps that have non-nil weather in response
 	for _, step := range steps {
 		if step.Weather != nil {
 			weatherSteps = append(weatherSteps, step)
@@ -304,6 +283,46 @@ func (s *Service) weather(ctx context.Context, route *t.Route, delay int64) []t.
 	return weatherSteps
 }
 
+// steps returns the steps from the OSRM route that the service will retrieve forecasted weather data for
+func (s *Service) steps(route *t.Route) []t.Step {
+	var tripDuration, durationStep float64
+	tripDuration = route.Duration
+	// determining how many steps to analyze forecasted weather data for
+	switch {
+	case tripDuration > 18000: // if trip is over 5 hours long, analyze 20 steps distributed along trip evenly
+		durationStep = tripDuration / 20
+	case tripDuration > 7200: // over 2 hours but under 5 hours, analyze every 15 minutes
+		durationStep = 15 * 60
+	case tripDuration > 3600: // over 1 hour but under 2 hours, analyze every 10 minutes
+		durationStep = 10 * 60
+	case tripDuration > 300: // over 5 minutes but under 1 hour, analyze every 5 minutes
+		durationStep = 5 * 60
+	default: // less than 5 minutes, divide the trip into thirds
+		durationStep = tripDuration / 3
+	}
+	routeSteps := route.Steps
+	var weatherSteps []t.Step
+	var currentDuration, goalDuration float64
+	goalDuration = durationStep
+	for i, step := range routeSteps {
+		// checking if the correct amount of time as specified above has elapsed before we analyze forecasted weather data
+		if currentDuration >= goalDuration {
+			weatherStep := routeSteps[i]
+			weatherStep.TotalDuration = math.Round(currentDuration)
+			weatherStep.StepDuration = math.Round(weatherStep.StepDuration)
+			// some steps don't include a name if it's the same as the previous one
+			if weatherStep.Name == "" {
+				weatherStep.Name = lastNamedStep(routeSteps, i)
+			}
+			weatherSteps = append(weatherSteps, weatherStep)
+			goalDuration = currentDuration + durationStep
+		}
+		currentDuration += step.StepDuration
+	}
+	return weatherSteps
+}
+
+// response builds the response object for the /journey endpoint, including reverse geocoding coordinates and generating the summary
 func (s *Service) response(ctx context.Context, steps []t.Step, req *JourneyRequest) (*JourneyResponse, error) {
 	resp := &JourneyResponse{}
 	for _, step := range steps {
@@ -314,6 +333,7 @@ func (s *Service) response(ctx context.Context, steps []t.Step, req *JourneyRequ
 	wg := new(sync.WaitGroup)
 	wg.Add(len(resp.Steps))
 	for i, step := range resp.Steps {
+		// explicitly declaring values as they would change during execution due to async loop otherwise
 		i, step := i, step
 		go func() {
 			defer wg.Done()
@@ -346,6 +366,7 @@ func (s *Service) response(ctx context.Context, steps []t.Step, req *JourneyRequ
 	return resp, nil
 }
 
+// summaryStepLocation returns a string representation of a Location struct
 func summaryStepLocation(loc *t.Location) string {
 	var builder strings.Builder
 	if loc.Locality != "" {
