@@ -21,4 +21,5 @@ COPY --from=build /wipercheck-service /wipercheck-service
 
 USER nonroot:nonroot
 
+EXPOSE 8080
 ENTRYPOINT ["/wipercheck-service"]
